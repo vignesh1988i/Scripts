@@ -1,6 +1,6 @@
 Script usage:
 
-python mq_track_flow.py
+python mq_track_flows.py
 
 Output 1: if you provide an alias queue
 
