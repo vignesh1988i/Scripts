@@ -1,0 +1,36 @@
+-- Shows every duplicate row, keeping the newest audit_date
+WITH duplicates AS (
+    SELECT 
+        queue_manager,
+        queue_name,
+        audit_day,
+        audit_date,
+        last_get_date,
+        last_get_time,
+        last_put_date,
+        last_put_time,
+        id,
+        ctid,  -- internal row identifier (safe for delete)
+        ROW_NUMBER() OVER (
+            PARTITION BY queue_manager, queue_name, audit_day 
+            ORDER BY audit_date DESC
+        ) AS rn
+    FROM queue_audit
+)
+SELECT 
+    queue_manager,
+    queue_name,
+    audit_day,
+    audit_date,
+    last_get_date,
+    last_get_time,
+    last_put_date,
+    last_put_time,
+    id,
+    CASE 
+        WHEN rn = 1 THEN 'KEEP (latest)'
+        ELSE 'DUPLICATE (will delete)'
+    END AS status
+FROM duplicates
+WHERE rn > 1 OR rn = 1  -- shows both, but marks which to keep
+ORDER BY queue_manager, queue_name, audit_day, audit_date DESC;
