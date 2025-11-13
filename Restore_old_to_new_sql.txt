@@ -1,0 +1,21 @@
+-- Insert merged data: 1 row per queue per day
+INSERT INTO queue_audit (
+    queue_manager, queue_name,
+    last_get_date, last_get_time,
+    last_put_date, last_put_time,
+    audit_date
+)
+SELECT 
+    queue_manager,
+    queue_name,
+    -- Latest non-blank GET
+    MAX(last_get_date) FILTER (WHERE last_get_date IS NOT NULL AND last_get_date != '') AS last_get_date,
+    MAX(last_get_time) FILTER (WHERE last_get_time IS NOT NULL AND last_get_time != '') AS last_get_time,
+    -- Latest non-blank PUT
+    MAX(last_put_date) FILTER (WHERE last_put_date IS NOT NULL AND last_put_date != '') AS last_put_date,
+    MAX(last_put_time) FILTER (WHERE last_put_time IS NOT NULL AND last_put_time != '') AS last_put_time,
+    -- Fixed: 00:00:00 of the audit_day
+    (audit_date::date)::timestamp AS audit_date
+FROM queue_audit_old
+GROUP BY queue_manager, queue_name, (audit_date::date)
+ON CONFLICT (queue_manager, queue_name, audit_day) DO NOTHING;
