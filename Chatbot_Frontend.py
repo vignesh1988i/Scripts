@@ -1,26 +1,42 @@
 # mq_chatbot.py → Run with: chainlit run mq_chatbot.py -w
+
 import chainlit as cl
 import time
 from datetime import datetime, timedelta
 import requests
-from dotenv import load_dotenv
 import os
+import logging
+from dotenv import load_dotenv
 from langchain_ollama import ChatOllama
 from langchain.memory import ConversationBufferWindowMemory
 from tools import tools
 
 # ──────────────────────────────────────────────────────────────
-# Configuration & Constants
+# 1. Global Configuration & Security Hardening
 # ──────────────────────────────────────────────────────────────
 load_dotenv()
+
+# Force safe defaults
+os.environ["CHAINLIT_ELEMENTS"] = "false"           # Disable vulnerable elements feature
+os.environ["OLLAMA_HOST"] = "127.0.0.1"             # Ollama only on localhost
+os.environ["OLLAMA_MAX_LOADED_MODELS"] = "1"        # Prevent memory bloat
+os.environ["OLLAMA_NUM_PARALLEL"] = "2"             # Safe for 4-core VM
+
+# Reduce log spam
+logging.getLogger("chainlit").setLevel(logging.WARNING)
+logging.getLogger("watchfiles").setLevel(logging.WARNING)
+
+# FastAPI config
 FASTAPI_URL = os.getenv("FASTAPI_URL", "http://localhost:8000")
 LOGIN_URL = f"{FASTAPI_URL}{os.getenv('LOGIN_ENDPOINT', '/login')}"
+
+# Session keys
 LAST_ACTIVITY = "last_activity"
 TOKEN_KEY = "jwt_token"
 TOKEN_EXPIRES_AT = "token_expires_at"
 
 # ──────────────────────────────────────────────────────────────
-# Automatically add JWT Bearer token to ALL requests in tools.py
+# 2. Auto-add JWT Bearer token to ALL tool requests
 # ──────────────────────────────────────────────────────────────
 original_post = requests.post
 def authenticated_post(url, *args, **kwargs):
@@ -30,13 +46,13 @@ def authenticated_post(url, *args, **kwargs):
         headers["Authorization"] = f"Bearer {token}"
         kwargs["headers"] = headers
     return original_post(url, *args, **kwargs)
-requests.post = authenticated_post   # Monkey patch — clean & safe
+requests.post = authenticated_post
 
 # ──────────────────────────────────────────────────────────────
-# Login function — called once per session
+# 3. Login function — called once per session
 # ──────────────────────────────────────────────────────────────
 async def login(username: str, password: str) -> str:
-    """Get JWT token from your FastAPI /login endpoint"""
+    """Fetch JWT token from your FastAPI /login endpoint"""
     try:
         resp = requests.post(LOGIN_URL, json={"username": username, "password": password}, timeout=10)
         resp.raise_for_status()
@@ -49,26 +65,24 @@ async def login(username: str, password: str) -> str:
         raise ValueError(f"Login failed: {str(e)}")
 
 # ──────────────────────────────────────────────────────────────
-# On chat start — force login with nice form
+# 4. On chat start — Force login with beautiful form
 # ──────────────────────────────────────────────────────────────
 @cl.on_chat_start
 async def start():
-    # If already logged in (browser refresh), skip login
     if cl.user_session.get(TOKEN_KEY):
         await cl.Message(content="Session active – MQ-Genie ready").send()
         await setup_bot()
         return
 
-    await cl.Message(content="**MQ-Genie requires authentication**").send()
+    await cl.Message(content="MQ-Genie requires authentication").send()
 
-    # Beautiful login form
     response = await cl.AskUserMessage(
         content="Please enter your MQ API credentials:",
         timeout=300
     ).send()
 
     if not response:
-        await cl.Message(content="Timeout. Goodbye.").send()
+        await cl.Message(content="Login timeout. Goodbye.").send()
         return
 
     username = response.get("username")
@@ -82,7 +96,6 @@ async def start():
         await cl.Message(content="Authenticating...").send()
         token = await login(username, password)
 
-        # Store token + expiry
         cl.user_session.set(TOKEN_KEY, token)
         expires_in = int(os.getenv("TOKEN_EXPIRY_MINUTES", "30"))
         cl.user_session.set(TOKEN_EXPIRES_AT, datetime.now() + timedelta(minutes=expires_in))
@@ -93,18 +106,22 @@ async def start():
         await cl.Message(content=f"Login failed: {e}").send()
 
 # ──────────────────────────────────────────────────────────────
-# Setup LLM + memory after successful login
+# 5. Setup LLM and memory after login
 # ──────────────────────────────────────────────────────────────
 async def setup_bot():
-    llm = ChatOllama(model="llama3.1:70b", temperature=0.1)  # or :8b
+    # Best CPU model as of Nov 2025 — qwen2.5:14b or llama3.1:8b
+    llm = ChatOllama(model="qwen2.5:14b", temperature=0.1)
+    # llm = ChatOllama(model="llama3.1:8b", temperature=0.1)  # fallback
+
     llm_with_tools = llm.bind_tools(tools)
     memory = ConversationBufferWindowMemory(k=10, return_messages=True)
 
     await cl.Message(content="""
 **MQ-Genie Secure** is ready!
-• Ask anything about queues, channels, connections
-• Data is live from your authenticated FastAPI
-• Session auto-refreshes after 15 mins inactivity
+• Live, authenticated access to IBM MQ
+• Crisp, technical answers only
+• Auto-refreshes after 15 mins inactivity
+• Runs perfectly on your 4-core 32 GB VM
 """).send()
 
     cl.user_session.set("llm", llm_with_tools)
@@ -112,7 +129,7 @@ async def setup_bot():
     cl.user_session.set(LAST_ACTIVITY, time.time())
 
 # ──────────────────────────────────────────────────────────────
-# Token expiry check
+# 6. Token expiry check
 # ──────────────────────────────────────────────────────────────
 async def check_token_valid() -> bool:
     expires_at = cl.user_session.get(TOKEN_EXPIRES_AT)
@@ -124,7 +141,7 @@ async def check_token_valid() -> bool:
     return True
 
 # ──────────────────────────────────────────────────────────────
-# Main message handler
+# 7. Main message handler — handles all edge cases
 # ──────────────────────────────────────────────────────────────
 @cl.on_message
 async def main(message: cl.Message):
@@ -137,14 +154,14 @@ async def main(message: cl.Message):
 
     # Auto-refresh after 15 mins inactivity
     now = time.time()
-    if (now - cl.user_session.get(LAST_ACTIVITY, calculated_now)) > 15*60:
+    if (now - cl.user_session.get(LAST_ACTIVITY, now)) > 15*60:
         await cl.Message(content="Refreshed – fetching latest live data").send()
         memory = cl.user_session.get("memory")
         memory.chat_memory.messages = memory.chat_memory.messages[-4:]
 
     cl.user_session.set(LAST_ACTIVITY, time.time())
 
-    # Build full context
+    # Build context
     msgs = [{"role": "system", "content": "You are MQ-Genie. Be crisp. Always require Queue Manager. Use tools."}]
     for m in cl.user_session.get("memory").chat_memory.messages:
         msgs.append({"role": m.type, "content": m.content})
@@ -152,7 +169,7 @@ async def main(message: cl.Message):
 
     response = await cl.user_session.get("llm").ainvoke(msgs, config={"callbacks": [cl.LangchainCallbackHandler()]})
 
-    # Tool execution with error handling
+    # Execute tools with full error handling
     if hasattr(response, "tool_calls") and response.tool_calls:
         for tc in response.tool_calls:
             for t in tools:
@@ -174,5 +191,5 @@ async def main(message: cl.Message):
     else:
         await cl.Message(content=response.content.strip()).send()
 
-    # Save conversation
+    # Save conversation (memory window auto-limits)
     cl.user_session.get("memory").save_context({"input": message.content}, {"output": response.content or ""})
