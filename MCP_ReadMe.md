@@ -960,8 +960,6 @@ elif name == "get_listener_status":
 ## Support and Documentation
 
 - **MCP Protocol:** https://modelcontextprotocol.io/
-- **FastAPI Documentation:** https://fastapi.tiangolo.com/
-- **IBM MQ Documentation:** https://www. ibm.com/docs/en/ibm-mq/
 
 ---
 
